@@ -1,43 +1,46 @@
 const pool = require('../config/db');
 
-exports.processFileData = async (data, tableName) => {
-  // Create table if not exists
-  await pool.query(`
+// Function to create a table dynamically with `excel_id` as primary key
+exports.createTableIfNotExists = async (tableName, fields) => {
+  let createTableQuery = `
     CREATE TABLE IF NOT EXISTS \`${tableName}\` (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      excel_id VARCHAR(255) UNIQUE,
-      name VARCHAR(255),
-      course VARCHAR(255),
-      college VARCHAR(255),
-      city VARCHAR(255),
-      state VARCHAR(255),
-      country VARCHAR(255)
-    )
-  `);
+      excel_id INT PRIMARY KEY,
+  `;
 
-  let newRecords = 0;
-
-  for (const row of data) {
-    const { id: excel_id, name, course, college, city, state, country } = row;
-
-    if (!excel_id) continue; // Skip rows without an ID
-
-    // Check if record already exists
-    const [existing] = await pool.query(
-      `SELECT 1 FROM \`${tableName}\` WHERE excel_id = ?`,
-      [excel_id]
-    );
-
-    if (existing.length === 0) {
-      // Insert new record
-      await pool.query(
-        `INSERT INTO \`${tableName}\` (excel_id, name, course, college, city, state, country)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [excel_id, name, course, college, city, state, country]
-      );
-      newRecords++;
+  // Dynamically add other fields from the Excel file as columns
+  fields.forEach((field) => {
+    if (field !== 'excel_id') {
+      createTableQuery += `\`${field}\` VARCHAR(255),`;
     }
+  });
+
+  createTableQuery = createTableQuery.slice(0, -1) + ')'; // Remove trailing comma and close the query
+  await pool.query(createTableQuery);
+};
+
+// Function to insert only new records into the table based on `excel_id`
+exports.insertNewRecords = async (tableName, data, fields) => {
+  // Fetch existing records to avoid duplicates based on `excel_id`
+  const [existingRecords] = await pool.query(`SELECT excel_id FROM \`${tableName}\``);
+
+  // Create a Set of existing `excel_id` values for fast lookup
+  const existingExcelIds = new Set(existingRecords.map((record) => record.excel_id));
+
+  // Filter out rows that already exist in the database (based on `excel_id`)
+  const newRecords = data.filter((row) => !existingExcelIds.has(row.excel_id));
+
+  if (newRecords.length === 0) {
+    return 0; // No new records to insert
   }
 
-  return `${newRecords} new records inserted.`;
+  // Insert new records into the table
+  const placeholders = fields.filter((field) => field !== 'excel_id').map(() => '?').join(', ');
+  const query = `INSERT INTO \`${tableName}\` (excel_id, ${fields.filter((field) => field !== 'excel_id').join(', ')}) VALUES (?, ${placeholders})`;
+
+  for (const row of newRecords) {
+    const values = [row.excel_id, ...fields.filter((field) => field !== 'excel_id').map((field) => row[field])];
+    await pool.query(query, values);
+  }
+
+  return newRecords.length; // Return the count of inserted records
 };
